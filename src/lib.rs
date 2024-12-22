@@ -7,7 +7,9 @@ pub mod runner_file_utils;
 pub mod test_parser;
 
 pub fn run(cli: config::Cli) -> anyhow::Result<()> {
-    make_and_run(cli.path.clone(), cli)?;
+    let s = make_and_run(cli.path.clone(), cli)?;
+
+    println!("Score: {s}");
 
     Ok(())
 }

@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Error, Result};
 use std::{
-    env,
+    env, fs,
     path::{self, Path, PathBuf},
     process::{Command, ExitStatus},
     thread,
@@ -71,19 +71,27 @@ where
 
     // This is the main business logic
     let run_and_verify = |p: &PathBuf| -> Result<TestOutcome> {
+        println!("Running on {p:?}");
         let intended_result =
             test_parser::get_test_result(p).map_err(|_| TestFailure::MalformedTest)?;
 
         let tempdir = TempDir::new("c0_runner").unwrap();
 
         let runtime_path = path::absolute(Path::new("../runtime"))?;
+        println!("RUNTIME PATH {runtime_path:?}");
         let absolute_test_path = path::absolute(p).unwrap();
 
-        env::set_current_dir(&tempdir).unwrap();
+        // TODO: this is a race condition lol ...
+        // env::set_current_dir(&tempdir).unwrap();
+        //
+        fs::copy(p, tempdir.path().join(p))?;
+
+        let new_test_path = tempdir.path().join(p);
 
         // TODO: add user supported args
         let compiler_exit_status = Command::new(student_compiler_path.clone())
-            .arg(absolute_test_path.to_str().unwrap())
+            .arg("-ex86-64")
+            .arg(new_test_path.to_str().unwrap())
             .status()
             .map_err(|_| TestFailure::CompileFailure)?;
 
@@ -94,6 +102,13 @@ where
             };
         }
 
+        let paths = fs::read_dir("./").unwrap();
+
+        for path in paths {
+            println!("Name: {}", path.unwrap().path().display())
+        }
+        println!("Done listing fiels");
+
         // We should now have a a.out output file
         // TODO: handle linking
         let linked_status = Command::new("gcc")
@@ -103,7 +118,8 @@ where
                 "-fno-lto",
                 "-fno-asynchronous-unwind-tables",
                 "-O0",
-                "./a.out",
+                format!("-o {}/a.out", runtime_path.to_str().unwrap()).as_str(),
+                new_test_path.join("./a.out").to_str().unwrap(),
                 runtime_path.join("run411.c").to_str().unwrap(),
             ])
             .status()
@@ -116,7 +132,7 @@ where
         let start_time = Instant::now();
 
         // Spawn compiled process
-        let mut child = Command::new("./a.out").spawn().unwrap();
+        let mut child = Command::new("a.out").spawn().unwrap();
 
         let execution_result: ProcessResult = loop {
             // Check if process has completed
