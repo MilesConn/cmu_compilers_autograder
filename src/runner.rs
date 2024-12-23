@@ -1,6 +1,5 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
-use clap::builder::OsStr;
-use std::os::unix::fs::symlink;
+use colored::Colorize;
 use std::os::unix::process::ExitStatusExt;
 use std::process::Stdio;
 use std::{
@@ -27,6 +26,7 @@ enum TestOutcome {
     Passed,   // 1.0
     TimedOut, // -0.1
     Failed,   // -1.0
+              // TODO: store incorrect result
 }
 
 #[derive(Error, Debug)]
@@ -69,6 +69,10 @@ pub fn make_and_run<P>(path: P, config: Cli) -> Result<f32>
 where
     P: AsRef<Path>,
 {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(config.parallel.unwrap_or(1).try_into().unwrap())
+        .build_global()
+        .unwrap();
     // Assume Make is in CWD
     {
         let mut make_cmd = Command::new("make");
@@ -94,14 +98,12 @@ where
 
     // This is the main business logic
     let run_and_verify = |p: &PathBuf| -> Result<TestOutcome> {
-        println!("Running on {p:?}");
         let intended_result = test_parser::get_test_result(p)
             .with_context(|| format!("Test {p:?} failed to parse"))?;
 
         let tempdir = TempDir::new("c0_runner").unwrap();
 
         let runtime_path = path::absolute(Path::new("../runtime"))?;
-        println!("RUNTIME PATH {runtime_path:?}");
         // let absolute_test_path = path::absolute(p).unwrap();
 
         // TODO: this is a race condition lol ...
@@ -111,38 +113,33 @@ where
             .file_name()
             .ok_or(anyhow!("Couldn't extract file name from p"))?;
         let new_test_path = tempdir.path().join(test_name);
-        println!("NEW TEST PATH {:?}", new_test_path);
-        println!("P: {:?}", p);
-        println!("P EXISTS? {}", p.exists());
         fs::copy(p, &new_test_path)?;
         // Symlinks might be weird...
         // symlink(p, &new_test_path)?;
+        //
+        let stdout_pipe = Stdio::piped();
 
         // TODO: add user supported args
-        let compiler_exit_status = Command::new(student_compiler_path.clone())
+        let compiler_output = Command::new(student_compiler_path.clone())
             .arg("-ex86-64")
             .arg(new_test_path.to_str().unwrap())
-            .status()
+            .output()
             .with_context(|| "Student compiler failed")?;
 
         if matches!(intended_result, TestResult::SourceError) {
-            return match compiler_exit_status.code() {
-                Some(1) => Ok(TestOutcome::Passed),
-                _ => Ok(TestOutcome::Failed),
+            return if !compiler_output.status.success() {
+                Ok(TestOutcome::Passed)
+            } else {
+                Err(TestFailure::CompileFailure)
+                    .with_context(|| String::from_utf8_lossy(&compiler_output.stdout).to_string())
             };
         }
 
-        if !compiler_exit_status.success() {
+        if !compiler_output.status.success() {
             bail!("Student compiler failed");
         }
 
-        println!("TEMP DIR {:?}", tempdir);
         let paths = fs::read_dir(&tempdir).unwrap();
-
-        for path in paths {
-            println!("Name: {}", path.unwrap().path().display())
-        }
-        println!("Done listing fiels");
 
         let out_path = tempdir.path().join("a.out");
 
@@ -228,35 +225,55 @@ where
                 }
             }
         }?;
-        println!("Intended result {intended_result:?}");
-        println!("Process REsult {execution_result:?}");
 
         Ok(match (intended_result, execution_result) {
             (TestResult::Ret(r), ProcessResult::Success(o)) => {
                 if r == o {
+                    println!("{}", format!("Test {test_name:?} passed").green());
                     TestOutcome::Passed
                 } else {
+                    println!(
+                        "{}",
+                        format!("{test_name:?} failed: expected {r} got {o}.").red()
+                    );
                     TestOutcome::Failed
                 }
             }
             (TestResult::Abort, ProcessResult::SignalAbort)
             | (TestResult::MemError, ProcessResult::SignalUsr2)
-            | (TestResult::DivByZero, ProcessResult::SigFpe) => TestOutcome::Passed,
-            (_, ProcessResult::Timeout) => TestOutcome::TimedOut,
+            | (TestResult::DivByZero, ProcessResult::SigFpe) => {
+                println!("{}", format!("Test {test_name:?} passed").green());
+                TestOutcome::Passed
+            }
+            (_, ProcessResult::Timeout) => {
+                println!("{}", format!("{test_name:?} timed out").yellow());
+                TestOutcome::TimedOut
+            }
+            // TODO: handle this case with logging
             _ => TestOutcome::Failed,
         })
     };
 
-    let map_score = |r: Result<TestOutcome>| -> f32 {
-        println!("RESULT {r:?}");
+    let map_score = |p: &PathBuf, r: Result<TestOutcome>| -> f32 {
+        let test_name = p.file_name().unwrap();
         match r {
-            Ok(TestOutcome::Passed) => 1.0,
+            Ok(TestOutcome::Passed) => {
+                println!("{}", format!("Test {test_name:?} passed").green());
+                1.0
+            }
             Ok(TestOutcome::TimedOut) => -0.1,
-            Ok(TestOutcome::Failed) | Err(_) => -1.0,
+            Ok(TestOutcome::Failed) => -1.0,
+            Err(e) => {
+                println!(
+                    "{}",
+                    format!("{test_name:?} failed with error\n\t {e}").red()
+                );
+                -1.0
+            }
         }
     };
 
-    let score = process_files_parallel(path, |p: &PathBuf| map_score(run_and_verify(p)));
+    let score = process_files_parallel(path, |p: &PathBuf| map_score(p, run_and_verify(p)));
 
     score.map(|v| v.iter().fold(0.0, |acc, e| acc + e))
 }
