@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 use thiserror::Error;
+use wait_timeout::ChildExt;
 
 use std::fs::File;
 use std::io::{self, BufRead, Read, Write};
@@ -173,58 +174,40 @@ where
         // // spawn compiled process
         // let mut child = command::new(out_path).output().unwrap();;
 
-        // TODO:
-        // Need coreutilsld run our own timer ...
         let mut child = Command::new(out_path).stdout(Stdio::piped()).spawn()?;
+        let run_timeout = Duration::from_secs(config.limit_run as u64);
+        let status_code = child.wait_timeout(run_timeout)?;
 
-        // Instead of running a loop here... we could just spawn it with a timer
-        let execution_result: ProcessResult = loop {
-            // Check if process has completed
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    if status.success() {
-                        let child_stdout = child.stdout.take().unwrap();
-                        let last_line =
-                            String::from_utf8(
-                                child_stdout.bytes().collect::<Result<Vec<_>, _>>()?,
-                            )?
+        let execution_result: ProcessResult = match status_code {
+            Some(status) => {
+                if status.success() {
+                    let child_stdout = child.stdout.take().unwrap();
+                    let last_line =
+                        String::from_utf8(child_stdout.bytes().collect::<Result<Vec<_>, _>>()?)?
                             .lines()
                             .last()
                             .ok_or(anyhow!("No output"))?
                             .parse::<i32>()?;
-                        break Ok(ProcessResult::Success(last_line));
+                    ProcessResult::Success(last_line)
+                } else {
+                    if let Some(exit_code) = status.code() {
+                        ProcessResult::Failure(exit_code)
                     } else {
-                        if let Some(exit_code) = status.code() {
-                            break Ok(ProcessResult::Failure(exit_code));
-                        } else {
-                            break Ok(match status.signal().unwrap() {
-                                libc::SIGABRT => ProcessResult::SignalAbort,
-                                libc::SIGFPE => ProcessResult::SigFpe,
-                                libc::SIGUSR2 => ProcessResult::SignalUsr2,
-                                other => ProcessResult::OtherSignal(other),
-                            });
+                        match status.signal().unwrap() {
+                            libc::SIGABRT => ProcessResult::SignalAbort,
+                            libc::SIGFPE => ProcessResult::SigFpe,
+                            libc::SIGUSR2 => ProcessResult::SignalUsr2,
+                            other => ProcessResult::OtherSignal(other),
                         }
-                    };
-                }
-                Ok(None) => {
-                    // Process still running, check timeout
-                    if start_time.elapsed() >= Duration::from_secs(config.limit_run as u64) {
-                        // Kill the process
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        break Ok(ProcessResult::Timeout);
                     }
-                    // Sleep briefly to prevent busy waiting
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Err(e) => {
-                    // Try to clean up
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break Err(e).context("Error while waiting for process");
                 }
             }
-        }?;
+            None => {
+                child.kill()?;
+                child.wait()?;
+                ProcessResult::Timeout
+            }
+        };
 
         Ok(match (intended_result, execution_result) {
             (TestResult::Ret(r), ProcessResult::Success(o)) => {
