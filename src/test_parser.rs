@@ -86,8 +86,11 @@ mod tests {
 
     #[test]
     fn test1() {
-        let first_line = "//test return 52";
+        let first_line = "//test return 21212121\n";
         println!("RET {:?}", parse_line(&first_line));
-        assert!(matches!(parse_line(&first_line), Ok(TestResult::Ret(52))));
+        assert!(matches!(
+            parse_line(&first_line),
+            Ok(TestResult::Ret(21212121))
+        ));
     }
 }

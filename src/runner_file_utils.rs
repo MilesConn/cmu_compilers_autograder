@@ -3,6 +3,17 @@ use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub trait GradeFile
+where
+    Self: Send + Sync,
+{
+    type Score: Send + Sync;
+
+    fn grade<P>(&self, file: P) -> Self::Score
+    where
+        P: AsRef<Path>;
+}
+
 /// Collects all files from a directory recursively
 fn collect_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
