@@ -1,3 +1,4 @@
+use core::str;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Error, Write};
 use std::path::Path;
@@ -66,7 +67,13 @@ fn parse_line(first_line: &str) -> Result<TestResult> {
                 bail!("Expected return test directive to have integer instead got: {first_line}")
             }
 
-            let int_result: i32 = words[2].parse()?;
+            // TODO: we need to check that the test verifier and this agree
+            // this allows non digit suffixes
+            let int_result : i32 = if words[2].as_bytes().last().map_or(false, |c| !c.is_ascii_digit()) {
+                words[2].strip_suffix(|c: char| !c.is_ascii_digit()).unwrap()
+            } else {
+                words[2]
+            }.parse()?;
 
             Ok(Ret(int_result))
         }
