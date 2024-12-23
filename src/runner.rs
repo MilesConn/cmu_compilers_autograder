@@ -146,7 +146,7 @@ where
 
         // We should now have a a.out output file
         // TODO: handle linking
-        let linked_status = Command::new("gcc")
+        let linked_output = Command::new("gcc")
             .args([
                 "-g",
                 "-fno-stack-protector",
@@ -162,14 +162,15 @@ where
                 add_extension(&new_test_path, "s").to_str().unwrap(),
                 runtime_path.join("run411.c").to_str().unwrap(),
             ])
-            .status()
+            .output()
             .with_context(|| "GCC failed to link")?;
 
-        if !linked_status.success() {
-            bail!("Failed to link");
+        if !linked_output.status.success() {
+            bail!(
+                "Failed to link with: \n\t{}",
+                String::from_utf8_lossy(&compiler_output.stdout).to_string()
+            );
         }
-
-        let start_time = Instant::now();
 
         // // spawn compiled process
         // let mut child = command::new(out_path).output().unwrap();;
