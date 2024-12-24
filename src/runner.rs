@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
+use std::fs::canonicalize;
 use std::os::unix::process::ExitStatusExt;
 use std::process::Stdio;
 use std::{
@@ -19,8 +20,8 @@ use tempdir::TempDir;
 
 use crate::{
     config::Cli,
+    parser::{self, TestResult},
     runner_file_utils::process_files_parallel,
-    test_parser::{self, TestResult},
 };
 
 #[derive(Debug)]
@@ -84,6 +85,14 @@ pub fn make_and_run<P>(path: P, config: &Cli) -> Result<FinalScore>
 where
     P: AsRef<Path>,
 {
+    let executable_path = env::current_exe()?;
+    let executable_dir = executable_path
+        .parent()
+        .ok_or(anyhow!("No parent directory for executable"))?;
+    let actual_test_path = fs::canonicalize(executable_dir)?.join("tests").join(path);
+
+    println!("Looking in {:?} for tests", actual_test_path);
+
     rayon::ThreadPoolBuilder::new()
         .num_threads(config.parallel.unwrap_or(1).try_into().unwrap())
         .build_global()
@@ -104,7 +113,7 @@ where
     // Student compiler should be made and now exists in
     // CWD/bin
     //
-    let student_compiler_path = path::absolute(Path::new("./bin/c0c"))?;
+    let student_compiler_path = fs::canonicalize(Path::new("./bin/c0c"))?;
     // let runtime_path = path::absolute(Path::new("../runtime"))?;
 
     if !student_compiler_path.exists() {
@@ -113,17 +122,11 @@ where
 
     // This is the main business logic
     let run_and_verify = |p: &PathBuf| -> Result<TestOutcome> {
-        let intended_result = test_parser::get_test_result(p)
-            .with_context(|| format!("Test {p:?} failed to parse"))?;
+        let intended_result =
+            parser::get_test_result(p).with_context(|| format!("Test {p:?} failed to parse"))?;
 
         let tempdir = TempDir::new("c0_runner").unwrap();
-
-        let runtime_path = path::absolute(Path::new("../runtime"))?;
-        // let absolute_test_path = path::absolute(p).unwrap();
-
-        // TODO: this is a race condition lol ...
-        // env::set_current_dir(&tempdir).unwrap();
-        //
+        let runtime_path = fs::canonicalize(Path::new("../runtime"))?;
         let test_name = p
             .file_name()
             .ok_or(anyhow!("Couldn't extract file name from p"))?;
@@ -131,8 +134,6 @@ where
         fs::copy(p, &new_test_path)?;
         // Symlinks might be weird...
         // symlink(p, &new_test_path)?;
-        //
-        let stdout_pipe = Stdio::piped();
 
         // TODO: add user supported args
         let compiler_output = Command::new(student_compiler_path.clone())
@@ -154,9 +155,13 @@ where
             bail!("Student compiler failed");
         }
 
-        let paths = fs::read_dir(&tempdir).unwrap();
-
         let out_path = tempdir.path().join("a.out");
+
+        // let platform_args = if cfg!(target_os = "macos") {
+        //     ["-target", "x86_64-apple-darwin"]
+        // } else {
+        //     ["-target", "x86_64-linux-gnu"]
+        // };
 
         // We should now have a a.out output file
         // TODO: handle linking
@@ -271,7 +276,7 @@ where
         }
     };
 
-    let scores = process_files_parallel(path, run_and_verify)?;
+    let scores = process_files_parallel(actual_test_path, run_and_verify)?;
 
     let final_score = scores.iter().fold(FinalScore::default(), |mut acc, e| {
         match e {
