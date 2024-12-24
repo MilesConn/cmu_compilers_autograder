@@ -171,10 +171,18 @@ where
                 "-fno-stack-protector",
                 "-fno-lto",
                 "-fno-asynchronous-unwind-tables",
-                #[cfg(target_os = "macos")]
                 "-target",
-                #[cfg(target_os = "macos")]
-                "x86_64-apple-darwin", // TODO:
+                {
+                    cfg_if::cfg_if! {
+                        if #[cfg(target_os = "macos")] {
+                            "x86_64-apple-darwin"
+                        } else if #[cfg(target_os = "linux")] {
+                            "x86_64-linux-gnu"
+                        } else {
+                            compile_error!("unspported target os")
+                        }
+                    }
+                },
                 "-O0",
                 "-o",
                 out_path.to_str().unwrap(),
