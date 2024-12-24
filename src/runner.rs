@@ -78,7 +78,7 @@ where
     {
         let mut make_cmd = Command::new("make");
         if let Some(par) = config.parallel {
-            make_cmd.arg(format!("-j {par}"));
+            make_cmd.args(["-j", par.to_string().as_str()]);
         }
 
         let status = make_cmd.status()?;
