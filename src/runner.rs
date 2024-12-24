@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
 use colored::Colorize;
+use serde::{Deserialize, Serialize};
 use std::os::unix::process::ExitStatusExt;
 use std::process::Stdio;
 use std::{
@@ -49,6 +50,19 @@ pub enum ProcessResult {
     OtherSignal(i32),
 }
 
+#[derive(Debug, Serialize, Default)]
+pub struct FinalScore {
+    passed: usize,
+    failed: usize,
+    timeout: usize,
+}
+
+impl FinalScore {
+    pub fn to_score(&self) -> f32 {
+        ((self.passed - self.failed) as f32) + ((self.timeout as f32) * 0.1)
+    }
+}
+
 fn add_extension(path: &PathBuf, extension: impl AsRef<Path>) -> PathBuf {
     let mut path = path.clone();
     match path.extension() {
@@ -66,7 +80,7 @@ fn add_extension(path: &PathBuf, extension: impl AsRef<Path>) -> PathBuf {
     }
 }
 
-pub fn make_and_run<P>(path: P, config: Cli) -> Result<f32>
+pub fn make_and_run<P>(path: P, config: &Cli) -> Result<FinalScore>
 where
     P: AsRef<Path>,
 {
@@ -257,7 +271,17 @@ where
         }
     };
 
-    let score = process_files_parallel(path, |p: &PathBuf| map_score(p, run_and_verify(p)));
+    let scores = process_files_parallel(path, run_and_verify)?;
 
-    score.map(|v| v.iter().fold(0.0, |acc, e| acc + e))
+    let final_score = scores.iter().fold(FinalScore::default(), |mut acc, e| {
+        match e {
+            Ok(TestOutcome::Passed) => acc.passed += 1,
+            Ok(TestOutcome::TimedOut) => acc.timeout += 1,
+            Ok(TestOutcome::Failed) | _ => acc.failed += 1,
+        };
+
+        acc
+    });
+
+    Ok(final_score)
 }
